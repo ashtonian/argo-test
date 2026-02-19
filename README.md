@@ -280,7 +280,14 @@ The `<::GROUP::>` in the ApplicationSet path is resolved by charmap from the Arg
 
 ### CMP Configuration
 
-One-time change to the ArgoCD repo-server CMP config to pass through the cluster identity variables:
+The ArgoCD repo-server needs a CMP sidecar running lovely + charmap, with cluster identity injected as env vars. See [`lovely/argocd-values.yaml`](lovely/argocd-values.yaml) for the full ArgoCD Helm chart values showing:
+
+- Init container that installs the charmap binary
+- CMP sidecar running argocd-lovely-plugin
+- ConfigMap defining the generate pipeline (charmap substitutes `<::VAR::>` markers, then lovely runs kustomize/helm)
+- Env vars sourced from a `cluster-identity` Secret (set per-cluster at bootstrap)
+
+The charmap generate command passes through each variable:
 
 ```sh
 charmap --mode flag \
@@ -288,7 +295,7 @@ charmap --mode flag \
   --set CLUSTER_NAME=${CLUSTER_NAME} \
 ```
 
-These env vars are set on the ArgoCD repo-server at cluster bootstrap time.
+This is the same Helm values structure across all clusters — only the Secret values differ.
 
 ### Result
 

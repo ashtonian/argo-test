@@ -1,0 +1,133 @@
+# ArgoCD Helm chart values for argocd-lovely-plugin + charmap CMP integration.
+#
+# This configures the repo-server with:
+#   1. An init container that installs the charmap binary
+#   2. A CMP sidecar running argocd-lovely-plugin
+#   3. A ConfigMap defining the plugin's generate pipeline (charmap → lovely)
+#   4. Environment variables for cluster identity (GROUP, CLUSTER_NAME, etc.)
+#
+# These env vars are set per-cluster at bootstrap time. All clusters share
+# the same git repo and the same Helm values structure — only the env var
+# values differ.
+#
+# Chart: https://github.com/argoproj/argo-helm/tree/main/charts/argo-cd
+
+repoServer:
+  # -- Env vars available to both the repo-server and the CMP sidecar.
+  # Set these per-cluster at bootstrap (e.g., via Terraform, Ansible, or sealed secrets).
+  env:
+    - name: GROUP
+      valueFrom:
+        secretKeyRef:
+          name: cluster-identity
+          key: group
+    - name: CLUSTER_NAME
+      valueFrom:
+        secretKeyRef:
+          name: cluster-identity
+          key: cluster-name
+
+  # -- Volumes shared between init container, repo-server, and CMP sidecar.
+  volumes:
+    - name: charmap-bin
+      emptyDir:
+        medium: Memory
+    - name: lovely-plugin-config
+      configMap:
+        name: argocd-lovely-plugin-config
+    - name: cmp-tmp
+      emptyDir:
+        medium: Memory
+
+  # -- Init container: copies the charmap binary into a shared volume.
+  initContainers:
+    - name: install-charmap
+      image: docker.io/ashtonian/charmap:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - |
+          cp /usr/local/bin/charmap /share/charmap \
+            && chmod 0777 /share/charmap
+      volumeMounts:
+        - name: charmap-bin
+          mountPath: /share
+
+  # -- CMP sidecar: runs argocd-lovely-plugin with charmap for variable substitution.
+  extraContainers:
+    - name: argocd-lovely-plugin
+      image: ghcr.io/crumbhole/argocd-lovely-plugin-cmp:1.2.2
+      command:
+        - /var/run/argocd/argocd-cmp-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+      env:
+        - name: GROUP
+          valueFrom:
+            secretKeyRef:
+              name: cluster-identity
+              key: group
+        - name: CLUSTER_NAME
+          valueFrom:
+            secretKeyRef:
+              name: cluster-identity
+              key: cluster-name
+      resources:
+        requests:
+          cpu: "300m"
+          memory: "512Mi"
+        limits:
+          cpu: "1500m"
+          memory: "1536Mi"
+      volumeMounts:
+        - name: cmp-tmp
+          mountPath: /var/log
+        - name: charmap-bin
+          subPath: charmap
+          mountPath: /usr/local/bin/charmap
+        - name: var-files
+          mountPath: /var/run/argocd
+        - name: plugins
+          mountPath: /home/argocd/cmp-server/plugins
+        - name: lovely-plugin-config
+          subPath: plugin.yaml
+          mountPath: /home/argocd/cmp-server/config/plugin.yaml
+        - name: cmp-tmp
+          mountPath: /tmp
+
+# -- ConfigMap defining the CMP plugin pipeline.
+# Charmap runs first (substitutes <::VAR::> markers), then lovely handles kustomize/helm.
+extraObjects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: argocd-lovely-plugin-config
+      namespace: argocd
+    data:
+      plugin.yaml: |
+        apiVersion: argoproj.io/v1alpha1
+        kind: ConfigManagementPlugin
+        metadata:
+          name: argocd-lovely-plugin
+        spec:
+          version: v1.0
+          allowConcurrency: true
+          lockRepo: false
+          discover:
+            find:
+              glob: "**/*"
+          generate:
+            command:
+              - sh
+              - -c
+              - |
+                export LOG_FILE="/var/log/charmap-$(date +%s%N).log"
+                charmap --mode flag \
+                  --set GROUP=${GROUP} \
+                  --set CLUSTER_NAME=${CLUSTER_NAME} \
+                  --log=${LOG_FILE}
+                export ARGOCD_LOG_LEVEL="info"
+                export LOVELY_KUSTOMIZE_PARAMS="--helm-kube-version=${KUBE_VERSION} --helm-api-versions=${KUBE_API_VERSIONS}"
+                exec argocd-lovely-plugin
