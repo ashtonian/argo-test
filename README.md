@@ -24,16 +24,30 @@ Uses [crumbhole/argocd-lovely-plugin](https://github.com/crumbhole/argocd-lovely
 | **Add a group** | N/A | Create group dir + N kustomizations | Create group dir + addon selection |
 | **Best for** | < 10 clusters | 10-100 clusters | 100+ clusters |
 
-### Directory count at scale (3,000 clusters / 50 groups / 20 base apps / 5 addons)
+### Directory count at scale (20 base apps / 5 addons / 5 groups)
 
-| | Overlay | Matrix | Lovely |
+| Clusters | Overlay | Matrix | Lovely |
+|---|---|---|---|
+| **10** | 220 | 130 | 30 |
+| **500** | 10,520 | 1,620 | 30 |
+| **10,000** | 200,020 | 11,120 | 30 |
+
+<details>
+<summary>Breakdown</summary>
+
+Assumptions: 20 base apps, 5 addons, 5 groups, avg 2 addons per group.
+
+| Component | Overlay | Matrix | Lovely |
 |---|---|---|---|
 | Base app definitions | 20 | 20 | 20 |
-| Group overlay dirs | — | 50 x 20 = 1,000 | — |
-| Cluster config dirs | 3,000 x 20 = 60,000 | 3,000 | 0 |
-| Addon dirs (avg 2/group) | (included above) | 6,000 | 50 x 2 = 100 |
-| ApplicationSets | 3,000 | 2 | 2 |
-| **Total** | **~63,000** | **~10,000** | **~120** |
+| Group overlay dirs | — | 5 x 20 = 100 | — |
+| Per-cluster dirs | N x 20 | N | 0 |
+| Addon dirs | (included above) | (included above) | 5 x 2 = 10 |
+| ApplicationSets | N | 2 | 2 |
+
+Overlay and Matrix scale linearly with cluster count. Lovely is constant — cluster identity comes from ArgoCD env vars, not git.
+
+</details>
 
 ---
 
