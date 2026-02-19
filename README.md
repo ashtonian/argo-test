@@ -2,6 +2,8 @@
 
 Three approaches for managing app deployment across a large cluster fleet using ArgoCD ApplicationSets and Kustomize.
 
+Each cluster runs its own ArgoCD instance, bootstrapped with cluster identity as environment variables (`CLUSTER_NAME`, `GROUP`, etc.). All instances point at a single shared git repo. This gives you centralized management — one repo controls what runs everywhere — while keeping each cluster's reconciliation loop independent and self-contained.
+
 Uses [crumbhole/argocd-lovely-plugin](https://github.com/crumbhole/argocd-lovely-plugin) and [ashtonian/charmap](https://github.com/ashtonian/charmap) for template variable substitution in Approach 3.
 
 **Goal:** Base apps on every cluster, per-group overrides, and selective addons per cluster.
