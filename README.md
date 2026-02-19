@@ -2,7 +2,7 @@
 
 Three approaches for managing app deployment across a large cluster fleet using ArgoCD ApplicationSets and Kustomize.
 
-Uses [argocd-lovely-plugin](https://github.com/crumbhole/argocd-lovely-plugin) and [charmap](https://github.com/ashtonian/charmap) for template variable substitution in Approach 3.
+Uses [crumbhole/argocd-lovely-plugin](https://github.com/crumbhole/argocd-lovely-plugin) and [ashtonian/charmap](https://github.com/ashtonian/charmap) for template variable substitution in Approach 3.
 
 **Goal:** Base apps on every cluster, per-group overrides, and selective addons per cluster.
 
@@ -20,7 +20,16 @@ Uses [argocd-lovely-plugin](https://github.com/crumbhole/argocd-lovely-plugin) a
 | **Add a group** | N/A | Create group dir + N kustomizations | Set a value in config |
 | **Best for** | < 10 clusters | 10-100 clusters | 100+ clusters |
 
-At **3,000 clusters / 50 groups / 20 base apps**: Overlay = ~60k dirs, Matrix = ~4k dirs, Lovely = ~3k dirs.
+### Directory count at scale (3,000 clusters / 50 groups / 20 base apps / 5 addons)
+
+| | Overlay | Matrix | Lovely |
+|---|---|---|---|
+| Base app definitions | 20 | 20 | 20 |
+| Group overlay dirs | — | 50 x 20 = 1,000 | 0 |
+| Cluster config dirs | 3,000 x 20 = 60,000 | 3,000 | 3,000 |
+| Addon dirs (avg 2/cluster) | (included above) | 6,000 | 6,000 |
+| ApplicationSets | 3,000 | 2 | 2 |
+| **Total** | **~63,000** | **~10,000** | **~9,000** |
 
 ---
 
