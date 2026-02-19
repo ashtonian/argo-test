@@ -2,6 +2,8 @@
 
 Three approaches for managing app deployment across a large cluster fleet using ArgoCD ApplicationSets and Kustomize.
 
+Uses [argocd-lovely-plugin](https://github.com/crumbhole/argocd-lovely-plugin) and [charmap](https://github.com/ashtonian/charmap) for template variable substitution in Approach 3.
+
 **Goal:** Base apps on every cluster, per-group overrides, and selective addons per cluster.
 
 ## Summary
