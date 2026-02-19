@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring
+  labels:
+    app: monitoring
+    tier: base
+    group: "<::GROUP::>"
+    cluster: "<::CLUSTER_NAME::>"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monitoring
+  template:
+    metadata:
+      labels:
+        app: monitoring
+        tier: base
+        group: "<::GROUP::>"
+        cluster: "<::CLUSTER_NAME::>"
+    spec:
+      containers:
+        - name: monitoring
+          image: busybox:latest
+          command: ['sh', '-c', 'echo "monitoring agent running on <::CLUSTER_NAME::> in group <::GROUP::>" && sleep 3600']
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+            requests:
+              memory: "64Mi"
+              cpu: "50m"

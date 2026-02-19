@@ -1,0 +1,92 @@
+# ApplicationSet 1: Base apps — deployed to ALL clusters.
+#
+# Matrix combines:
+#   Generator 1 (git files): reads each cluster's config.yaml → produces cluster_name, group, cluster_server
+#   Generator 2 (git dirs):  discovers all base app directories
+#
+# The lovely plugin + charmap resolves <::GROUP::> and <::CLUSTER_NAME::> template variables
+# at render time using plugin.env — no per-group overlay directories needed.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: lovely-base-apps
+  namespace: argocd
+spec:
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/ashtonian/argo-test.git
+              revision: HEAD
+              files:
+                - path: lovely/clusters/*/config.yaml
+          - git:
+              repoURL: https://github.com/ashtonian/argo-test.git
+              revision: HEAD
+              directories:
+                - path: lovely/apps/base/*
+  goTemplate: true
+  template:
+    metadata:
+      name: '{{.cluster_name}}-{{.path.basename}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/ashtonian/argo-test.git
+        targetRevision: HEAD
+        path: '{{.path.path}}'
+        plugin:
+          env:
+            - name: GROUP
+              value: '{{.group}}'
+            - name: CLUSTER_NAME
+              value: '{{.cluster_name}}'
+      destination:
+        server: '{{.cluster_server}}'
+        namespace: default
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+
+# ApplicationSet 2: Cluster-specific addons — deployed only where a cluster opts in.
+#
+# Same as the matrix approach — directory presence controls selective deployment.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: lovely-cluster-addons
+  namespace: argocd
+spec:
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/ashtonian/argo-test.git
+              revision: HEAD
+              files:
+                - path: lovely/clusters/*/config.yaml
+          - git:
+              repoURL: https://github.com/ashtonian/argo-test.git
+              revision: HEAD
+              directories:
+                - path: 'lovely/clusters/{{.cluster_name}}/addons/*'
+  goTemplate: true
+  template:
+    metadata:
+      name: '{{.cluster_name}}-{{.path.basename}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/ashtonian/argo-test.git
+        targetRevision: HEAD
+        path: '{{.path.path}}'
+      destination:
+        server: '{{.cluster_server}}'
+        namespace: default
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

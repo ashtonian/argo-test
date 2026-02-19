@@ -1,6 +1,6 @@
 # ArgoCD ApplicationSet Patterns
 
-Two approaches for managing app deployment across a large fleet of clusters using ArgoCD ApplicationSets and Kustomize overlays.
+Three approaches for managing app deployment across a large fleet of clusters using ArgoCD ApplicationSets and Kustomize.
 
 **Goal:** Deploy a base set of apps to all clusters, apply per-group configuration overrides, and selectively deploy additional apps to specific clusters.
 
@@ -198,60 +198,202 @@ generators:
 | Group overlays shared across clusters | Two levels of kustomize (group → base) |
 | Scales to thousands of clusters | Per-cluster addon directories still needed for selective apps |
 | Adding a cluster = one config.yaml | Group must exist before clusters can reference it |
+| Full kustomize power for group overrides | Adding a base app requires a kustomization in every group |
 
 ---
 
-## Scaling Considerations
+## Approach 3: Lovely + Charmap (`lovely/`)
 
-### Adding a New Cluster
+Two ApplicationSets using the **matrix generator** with **argocd-lovely-plugin + charmap** for template variable substitution. Base app manifests contain `<::VAR::>` template markers that get resolved at render time — eliminating the entire per-group overlay directory tree.
 
-**Overlay:** Create `clusters/<name>/` with a kustomization for each desired app.
+This is the key difference from Approach 2: instead of `N_groups × N_base_apps` kustomization overlay files, you have `N_base_apps` base files total. The group-specific values are injected via `source.plugin.env` on each generated Application.
 
-**Matrix:** Create `clusters/<name>/config.yaml` with `cluster_name`, `group`, and `cluster_server`. All base apps auto-deploy via the group. Optionally add `addons/<app>/` for selective apps.
+### Structure
 
-### Adding a New Base App
+```
+lovely/
+├── apps/
+│   ├── base/                          # Deployed to ALL clusters (templated)
+│   │   ├── monitoring/
+│   │   │   ├── deployment.yaml        # Uses <::GROUP::>, <::CLUSTER_NAME::>
+│   │   │   └── kustomization.yaml
+│   │   ├── ingress/
+│   │   └── logging/
+│   └── addons/                        # Deployed selectively per cluster
+│       ├── gpu-operator/
+│       └── edge-cache/
+│
+├── clusters/                          # Per-cluster identity + addon selection
+│   ├── cluster-001/
+│   │   ├── config.yaml                # cluster_name, group, cluster_server
+│   │   └── addons/
+│   │       └── gpu-operator/
+│   │           └── kustomization.yaml
+│   ├── cluster-002/
+│   │   └── config.yaml
+│   └── cluster-003/
+│       ├── config.yaml
+│       └── addons/
+│           ├── gpu-operator/
+│           └── edge-cache/
+│
+└── applicationsets.yaml               # Two ApplicationSets
+```
 
-**Overlay:** Create the app in `apps/`, then add an overlay directory to every cluster that needs it.
+**No `groups/` directory at all.** Group-specific configuration is handled entirely by template variable substitution at render time.
 
-**Matrix:** Create the app in `apps/base/`, then add a kustomization in each group's `apps/` directory. Every cluster in those groups automatically gets it.
+### How It Works
 
-### Adding a New Group
+1. Base app manifests use `<::GROUP::>` and `<::CLUSTER_NAME::>` template markers in labels, annotations, config values, etc.
+2. The ApplicationSet reads each cluster's `config.yaml` to get `group`, `cluster_name`, and `cluster_server`
+3. The matrix generator combines clusters × base app directories
+4. Each generated Application passes cluster-specific values to the lovely plugin via `source.plugin.env`
+5. At render time, charmap resolves `<::GROUP::>` → `us-east`, `<::CLUSTER_NAME::>` → `cluster-001`, etc.
+6. The lovely plugin then runs kustomize on the substituted output
 
-**Matrix only:** Create `groups/<name>/config.yaml` and `groups/<name>/apps/` with kustomizations for each base app. Clusters referencing this group will use these overlays.
+### Templated Manifests
 
-### Adding a New Addon
-
-Both approaches: Create the addon in the apps directory, then add a kustomization under each cluster that should receive it.
-
----
-
-## Group Overrides
-
-Group overlays use standard kustomize to customize base apps. Common overrides:
-
-- **Labels/annotations** — group tags, compliance markers
-- **Replicas** — scale differently per group
-- **Resource limits** — adjust for hardware profiles
-- **ConfigMap patches** — group-specific endpoints, DNS suffixes
-- **Image overrides** — use regional registries
-
-Example group overlay:
+Base app manifests use charmap's `<::VAR::>` syntax:
 
 ```yaml
-# groups/us-east/apps/monitoring/kustomization.yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - ../../../../apps/base/monitoring
-patches:
-  - target:
-      kind: Deployment
-      name: monitoring
-    patch: |-
-      - op: add
-        path: /metadata/labels/group
-        value: us-east
-      - op: add
-        path: /spec/template/metadata/labels/group
-        value: us-east
+# apps/base/monitoring/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring
+  labels:
+    app: monitoring
+    group: "<::GROUP::>"
+    cluster: "<::CLUSTER_NAME::>"
+spec:
+  template:
+    metadata:
+      labels:
+        app: monitoring
+        group: "<::GROUP::>"
+        cluster: "<::CLUSTER_NAME::>"
+    spec:
+      containers:
+        - name: monitoring
+          command: ['sh', '-c', 'echo "monitoring on <::CLUSTER_NAME::> (<::GROUP::>)"']
 ```
+
+### Cluster Config
+
+Same as Approach 2 — one `config.yaml` per cluster:
+
+```yaml
+# clusters/cluster-001/config.yaml
+cluster_name: cluster-001
+group: us-east
+cluster_server: https://cluster-001.example.com
+```
+
+### ApplicationSet 1: Base Apps (all clusters × base apps, with plugin env)
+
+```yaml
+generators:
+  - matrix:
+      generators:
+        - git:
+            files:
+              - path: lovely/clusters/*/config.yaml
+        - git:
+            directories:
+              - path: lovely/apps/base/*
+template:
+  spec:
+    source:
+      path: '{{.path.path}}'
+      plugin:
+        env:
+          - name: GROUP
+            value: '{{.group}}'
+          - name: CLUSTER_NAME
+            value: '{{.cluster_name}}'
+```
+
+The `source.plugin.env` block is what makes this work — it passes ApplicationSet template parameters as environment variables to the CMP sidecar. Charmap reads these env vars and substitutes `<::GROUP::>` → `us-east`, etc.
+
+### ApplicationSet 2: Cluster Addons (same as Approach 2)
+
+```yaml
+generators:
+  - matrix:
+      generators:
+        - git:
+            files:
+              - path: lovely/clusters/*/config.yaml
+        - git:
+            directories:
+              - path: 'lovely/clusters/{{.cluster_name}}/addons/*'
+```
+
+### Generated Applications
+
+Same result as Approach 2:
+
+| Cluster | Base Apps | Addons | Group |
+|---------|-----------|--------|-------|
+| cluster-001 | monitoring, ingress, logging | gpu-operator | us-east |
+| cluster-002 | monitoring, ingress, logging | _(none)_ | us-east |
+| cluster-003 | monitoring, ingress, logging | gpu-operator, edge-cache | eu-west |
+
+**Total: 11 Applications** — but with far fewer files in the repo.
+
+### CMP Configuration Requirement
+
+The lovely plugin CMP must be configured to pass through the additional env vars. Add them to the charmap invocation in the plugin config:
+
+```yaml
+# In the CMP plugin.yaml generate command:
+charmap --mode flag \
+  --set GROUP=${GROUP} \
+  --set CLUSTER_NAME=${CLUSTER_NAME} \
+```
+
+This is a one-time configuration change to the ArgoCD repo-server, not per-cluster.
+
+### Trade-offs
+
+| Pro | Con |
+|-----|-----|
+| Fewest files — no per-group overlay directories | Requires argocd-lovely-plugin + charmap CMP |
+| Adding a group = just set a value in config.yaml | Template substitution is string-only (no structural transforms) |
+| Adding a base app = one directory, all clusters get it | CMP config must declare every passthrough variable |
+| Single pair of ApplicationSets for all clusters | Harder to diff rendered output without running charmap |
+| Same kustomize features still available | Plugin env must be explicitly wired in ApplicationSet template |
+| Template vars compose with kustomize patches | |
+
+---
+
+## Comparison at Scale
+
+For a fleet of **3,000 clusters** across **50 groups** with **20 base apps** and **5 optional addons**:
+
+### File Count
+
+| | Approach 1: Overlay | Approach 2: Matrix | Approach 3: Lovely |
+|---|---|---|---|
+| Base app definitions | 20 dirs | 20 dirs | 20 dirs |
+| Group overlay dirs | N/A | 50 × 20 = **1,000 dirs** | **0** |
+| Cluster configs | 3,000 dirs × 20 apps = **60,000 dirs** | 3,000 config files | 3,000 config files |
+| Addon dirs | (included above) | ~varies per cluster | ~varies per cluster |
+| ApplicationSets | **3,000** (one per cluster) | **2** | **2** |
+| **Total directories** | **~60,000** | **~4,000** | **~3,000** |
+
+### Operations
+
+| Operation | Overlay | Matrix | Lovely |
+|-----------|---------|--------|--------|
+| Add a cluster | Create N app dirs | Create 1 config.yaml | Create 1 config.yaml |
+| Add a base app | Touch every cluster dir | Add 1 kustomization per group | Add 1 app dir (all clusters get it) |
+| Add a group | N/A | Create group dir + N app kustomizations | Set value in cluster configs |
+| Change group config | Edit every cluster's kustomization | Edit group overlay | Edit template or config.yaml |
+| Add an addon to a cluster | Create dir in cluster | Create dir in cluster | Create dir in cluster |
+
+### Recommendation
+
+- **Small scale (< 10 clusters):** Approach 1 (Overlay) — simplest, no matrix complexity
+- **Medium scale (10–100 clusters):** Approach 2 (Matrix) — scales well, full kustomize power per group
+- **Large scale (100+ clusters):** Approach 3 (Lovely) — fewest files, groups are just config values, base apps need no per-group copies
